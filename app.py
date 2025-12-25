@@ -15,25 +15,34 @@ st.set_page_config(
 # !!! PASTE YOUR KEY HERE !!!
 api_key = "AIzaSyCYdqSca3--0MkYlXIgsDZQLC09Pft4fiY" 
 
-# --- HELPERS ---
+# --- HELPER: SMART MODEL DETECTOR (The Fix) ---
 def get_working_model(api_key):
+    """
+    Asks Google API which model is actually available for this key 
+    to prevent 404 errors.
+    """
     genai.configure(api_key=api_key)
     try:
-        return "gemini-1.5-flash"
-    except:
-        return "gemini-pro"
+        # Loop through available models to find the first valid Gemini one
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                if 'gemini' in m.name:
+                    return m.name
+    except Exception as e:
+        pass
+    
+    # Ultimate fallback if auto-detect fails
+    return "gemini-pro"
 
 def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        # Fetch 1 year for the "Time Machine" feature
         hist = stock.history(period="1y")
         try:
             news = stock.news
         except:
             news = []
         
-        # Try fetching insider data (can be flaky on free APIs)
         try:
             insider = stock.insider_transactions
         except:
@@ -50,11 +59,13 @@ def analyze_sentiment(news_list, api_key, eli5_mode=False):
     if not news_list:
         return "No news found.", 0
 
+    # Use the robust function to get the correct model name
     model_name = get_working_model(api_key)
+    
     try:
         model = genai.GenerativeModel(model_name)
-    except:
-        return "Model Error", 0
+    except Exception as e:
+        return f"Model Init Error: {e}", 0
     
     headlines = []
     for n in news_list[:5]:
@@ -64,7 +75,6 @@ def analyze_sentiment(news_list, api_key, eli5_mode=False):
     if not headlines:
         return "No readable headlines.", 0
     
-    # Customizing Prompt based on ELI5 Toggle
     tone_instruction = "Explain it simply like I'm 5 years old. Use emojis. No financial jargon." if eli5_mode else "Use professional financial tone."
     
     prompt = f"""
@@ -78,18 +88,20 @@ def analyze_sentiment(news_list, api_key, eli5_mode=False):
     try:
         response = model.generate_content(prompt)
         text = response.text
-        if "SCORE" not in text: return f"AI Error: {text}", 0
+        if "SCORE" not in text: 
+            # Fallback if model doesn't follow strict format
+            return f"{text[:150]}...", 0
         
         score = float(text.split("SCORE:")[1].split("\n")[0].strip())
         summary = text.split("SUMMARY:")[1].strip()
         return summary, score
-    except:
-        return "Analysis Failed", 0
+    except Exception as e:
+        return f"Analysis Failed: {str(e)}", 0
 
 # --- MAIN UI ---
 st.header("📈 StockPulse")
 
-# 1. QUICK SELECT (Mobile Friendly)
+# 1. QUICK SELECT
 col_q1, col_q2, col_q3, col_q4 = st.columns(4)
 if 'selected_ticker' not in st.session_state: st.session_state.selected_ticker = "GOOGL"
 
@@ -110,12 +122,11 @@ if ticker_input:
         else:
             current_price = hist['Close'].iloc[-1]
             
-            # --- FEATURE 2: TABS LAYOUT ---
+            # --- TABS LAYOUT ---
             tab1, tab2, tab3 = st.tabs(["📊 Price", "🤖 AI & News", "🕵️ Insider & Fun"])
             
-            # === TAB 1: PRICE & BASICS ===
+            # === TAB 1: PRICE ===
             with tab1:
-                # Metrics Row
                 m1, m2, m3 = st.columns(3)
                 if len(hist) > 1:
                     delta = ((current_price - hist['Close'].iloc[-2])/hist['Close'].iloc[-2])*100
@@ -125,22 +136,20 @@ if ticker_input:
                 m2.metric("High (1y)", f"${hist['High'].max():.2f}")
                 m3.metric("Low (1y)", f"${hist['Low'].min():.2f}")
                 
-                # Chart
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=hist.index, y=hist['Close'], fill='tozeroy', line_color='#00CC96'))
                 fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=300, showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
 
-            # === TAB 2: AI & NEWS ===
+            # === TAB 2: AI ===
             with tab2:
-                # --- FEATURE 6: ELI5 TOGGLE ---
                 col_ai_head, col_ai_tog = st.columns([3,1])
                 col_ai_head.subheader("Sentiment Analysis")
                 eli5 = col_ai_tog.toggle("Explain like I'm 5 👶", value=False)
                 
                 summary, score = analyze_sentiment(news, api_key, eli5)
                 
-                if isinstance(score, float):
+                if isinstance(score, float) and score != 0:
                     st.progress((score + 1) / 2)
                     if score > 0.2: st.success(summary)
                     elif score < -0.2: st.error(summary)
@@ -153,9 +162,8 @@ if ticker_input:
                 for n in news[:3]:
                     st.markdown(f"• **[{n.get('title', 'Link')}]({n.get('link', '#')})**")
 
-            # === TAB 3: INSIDER & TIME MACHINE ===
+            # === TAB 3: INSIDER ===
             with tab3:
-                # --- FEATURE 8: TIME MACHINE ---
                 st.subheader("⏳ Time Machine")
                 st.caption(f"If you invested $1,000 in {ticker_input} exactly 1 year ago...")
                 
@@ -168,19 +176,16 @@ if ticker_input:
                     st.markdown(f"### You would have: :{color}[${final_value:,.2f}]")
                     st.markdown(f"**Return:** :{color}[{roi:.1f}%]")
                 else:
-                    st.warning("Not enough historical data for Time Machine.")
+                    st.warning("Not enough historical data.")
 
                 st.divider()
 
-                # --- FEATURE 10: INSIDER MOVES (Fixed) ---
                 st.subheader("🕵️ Insider Moves")
                 if insider is not None and not insider.empty:
                     st.caption("Recent transactions by company insiders:")
-                    
-                    # 1. Create a safe copy
                     insider_clean = insider.copy()
                     
-                    # 2. Try to find the date column
+                    # Safe Date Handling
                     date_col = None
                     possible_dates = ['Start Date', 'Date', 'Transaction Date']
                     for col in possible_dates:
@@ -188,26 +193,18 @@ if ticker_input:
                             date_col = col
                             break
                     
-                    # 3. If date found, set it as index (pretty format)
                     if date_col:
                         try:
                             insider_clean[date_col] = pd.to_datetime(insider_clean[date_col])
                             insider_clean.set_index(date_col, inplace=True)
                             insider_clean.index = insider_clean.index.date
                         except:
-                            pass # If conversion fails, ignore it
-                    
-                    # 4. Display columns safely
-                    # We check which columns actually exist before asking to display them
-                    cols_to_show = []
-                    for c in ['Text', 'Shares', 'Value']:
-                        if c in insider_clean.columns:
-                            cols_to_show.append(c)
+                            pass
                             
+                    cols_to_show = [c for c in ['Text', 'Shares', 'Value'] if c in insider_clean.columns]
                     if cols_to_show:
                         st.dataframe(insider_clean[cols_to_show].head(5), use_container_width=True)
                     else:
                         st.dataframe(insider_clean.head(5), use_container_width=True)
-
                 else:
                     st.info("No insider trading data available for this stock.")
