@@ -15,23 +15,16 @@ st.set_page_config(
 # !!! PASTE YOUR KEY HERE !!!
 api_key = "AIzaSyCYdqSca3--0MkYlXIgsDZQLC09Pft4fiY" 
 
-# --- HELPER: SMART MODEL DETECTOR (The Fix) ---
+# --- HELPER: SMART MODEL DETECTOR ---
 def get_working_model(api_key):
-    """
-    Asks Google API which model is actually available for this key 
-    to prevent 404 errors.
-    """
     genai.configure(api_key=api_key)
     try:
-        # Loop through available models to find the first valid Gemini one
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 if 'gemini' in m.name:
                     return m.name
-    except Exception as e:
+    except:
         pass
-    
-    # Ultimate fallback if auto-detect fails
     return "gemini-pro"
 
 def get_stock_data(ticker):
@@ -42,56 +35,38 @@ def get_stock_data(ticker):
             news = stock.news
         except:
             news = []
-        
         try:
             insider = stock.insider_transactions
         except:
             insider = pd.DataFrame()
-            
         return hist, news, stock.info, insider
-    except Exception as e:
+    except:
         return None, None, None, None
 
 def analyze_sentiment(news_list, api_key, eli5_mode=False):
-    if "PASTE" in api_key:
-        return "⚠️ Add API Key!", 0
-    
-    if not news_list:
-        return "No news found.", 0
+    if "PASTE" in api_key: return "⚠️ Add API Key!", 0
+    if not news_list: return "No news found.", 0
 
-    # Use the robust function to get the correct model name
     model_name = get_working_model(api_key)
-    
     try:
         model = genai.GenerativeModel(model_name)
     except Exception as e:
-        return f"Model Init Error: {e}", 0
+        return f"Model Error: {e}", 0
     
     headlines = []
     for n in news_list[:5]:
         title = n.get('title', n.get('content', {}).get('title', ''))
         if title: headlines.append(title)
             
-    if not headlines:
-        return "No readable headlines.", 0
+    if not headlines: return "No headlines.", 0
     
-    tone_instruction = "Explain it simply like I'm 5 years old. Use emojis. No financial jargon." if eli5_mode else "Use professional financial tone."
-    
-    prompt = f"""
-    Analyze sentiment for these stock headlines: {headlines}
-    {tone_instruction}
-    Return strictly:
-    SCORE: [Float -1.0 to 1.0]
-    SUMMARY: [2-sentence summary]
-    """
+    tone = "Explain simply like I'm 5. Use emojis." if eli5_mode else "Use professional tone."
+    prompt = f"Analyze sentiment for: {headlines}. {tone} Return strictly: SCORE: [Float -1.0 to 1.0] SUMMARY: [2-sentence summary]"
     
     try:
         response = model.generate_content(prompt)
         text = response.text
-        if "SCORE" not in text: 
-            # Fallback if model doesn't follow strict format
-            return f"{text[:150]}...", 0
-        
+        if "SCORE" not in text: return f"{text[:100]}...", 0
         score = float(text.split("SCORE:")[1].split("\n")[0].strip())
         summary = text.split("SUMMARY:")[1].strip()
         return summary, score
@@ -122,16 +97,12 @@ if ticker_input:
         else:
             current_price = hist['Close'].iloc[-1]
             
-            # --- TABS LAYOUT ---
+            # --- TABS ---
             tab1, tab2, tab3 = st.tabs(["📊 Price", "🤖 AI & News", "🕵️ Insider & Fun"])
             
-            # === TAB 1: PRICE ===
             with tab1:
                 m1, m2, m3 = st.columns(3)
-                if len(hist) > 1:
-                    delta = ((current_price - hist['Close'].iloc[-2])/hist['Close'].iloc[-2])*100
-                else:
-                    delta = 0
+                delta = ((current_price - hist['Close'].iloc[-2])/hist['Close'].iloc[-2])*100 if len(hist) > 1 else 0
                 m1.metric("Price", f"${current_price:.2f}", f"{delta:.2f}%")
                 m2.metric("High (1y)", f"${hist['High'].max():.2f}")
                 m3.metric("Low (1y)", f"${hist['Low'].min():.2f}")
@@ -141,7 +112,6 @@ if ticker_input:
                 fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=300, showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
 
-            # === TAB 2: AI ===
             with tab2:
                 col_ai_head, col_ai_tog = st.columns([3,1])
                 col_ai_head.subheader("Sentiment Analysis")
@@ -158,53 +128,49 @@ if ticker_input:
                     st.warning(summary)
 
                 st.divider()
-                st.caption("Latest News")
-                for n in news[:3]:
-                    st.markdown(f"• **[{n.get('title', 'Link')}]({n.get('link', '#')})**")
+                st.caption("Latest News (Opens in New Tab)")
+                
+                # --- THE FIX: Force New Tab with HTML ---
+                for n in news[:5]:
+                    title = n.get('title', 'Read Article')
+                    link = n.get('link')
+                    
+                    # Only render if we have a valid link
+                    if link and link.startswith('http'):
+                        # HTML anchor tag with target="_blank"
+                        st.markdown(
+                            f'<a href="{link}" target="_blank" style="text-decoration: none; color: #00CC96; font-weight: bold;">🔗 {title}</a>', 
+                            unsafe_allow_html=True
+                        )
+                        st.write("") # Spacer
 
-            # === TAB 3: INSIDER ===
             with tab3:
                 st.subheader("⏳ Time Machine")
-                st.caption(f"If you invested $1,000 in {ticker_input} exactly 1 year ago...")
-                
                 if not hist.empty:
                     start_price_1y = hist['Close'].iloc[0]
                     roi = ((current_price - start_price_1y) / start_price_1y) * 100
                     final_value = 1000 * (1 + roi/100)
-                    
                     color = "green" if roi > 0 else "red"
-                    st.markdown(f"### You would have: :{color}[${final_value:,.2f}]")
-                    st.markdown(f"**Return:** :{color}[{roi:.1f}%]")
-                else:
-                    st.warning("Not enough historical data.")
-
+                    st.markdown(f"If you invested $1,000 exactly 1 year ago, you'd have: :{color}[${final_value:,.2f}]")
+                
                 st.divider()
-
                 st.subheader("🕵️ Insider Moves")
                 if insider is not None and not insider.empty:
-                    st.caption("Recent transactions by company insiders:")
                     insider_clean = insider.copy()
-                    
-                    # Safe Date Handling
+                    # Safe Date logic...
                     date_col = None
-                    possible_dates = ['Start Date', 'Date', 'Transaction Date']
-                    for col in possible_dates:
+                    for col in ['Start Date', 'Date', 'Transaction Date']:
                         if col in insider_clean.columns:
                             date_col = col
                             break
-                    
                     if date_col:
                         try:
                             insider_clean[date_col] = pd.to_datetime(insider_clean[date_col])
                             insider_clean.set_index(date_col, inplace=True)
                             insider_clean.index = insider_clean.index.date
-                        except:
-                            pass
-                            
-                    cols_to_show = [c for c in ['Text', 'Shares', 'Value'] if c in insider_clean.columns]
-                    if cols_to_show:
-                        st.dataframe(insider_clean[cols_to_show].head(5), use_container_width=True)
-                    else:
-                        st.dataframe(insider_clean.head(5), use_container_width=True)
+                        except: pass
+                    
+                    cols = [c for c in ['Text', 'Shares', 'Value'] if c in insider_clean.columns]
+                    st.dataframe(insider_clean[cols].head(5) if cols else insider_clean.head(5), use_container_width=True)
                 else:
-                    st.info("No insider trading data available for this stock.")
+                    st.info("No insider data available.")
