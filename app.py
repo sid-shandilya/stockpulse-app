@@ -3,137 +3,211 @@ import yfinance as yf
 import google.generativeai as genai
 import pandas as pd
 import plotly.graph_objects as go
+from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="StockPulse AI", layout="wide")
+st.set_page_config(
+    page_title="StockPulse Super App", 
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
 # !!! PASTE YOUR KEY HERE !!!
 api_key = "AIzaSyCYdqSca3--0MkYlXIgsDZQLC09Pft4fiY" 
 
-# --- HELPER: AUTO-DETECT MODEL ---
+# --- HELPERS ---
 def get_working_model(api_key):
-    """Automatically finds a model that works for your API Key"""
     genai.configure(api_key=api_key)
-    
-    # 1. Try to list models your key can access
     try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                if 'gemini' in m.name:
-                    # Found a valid Gemini model! Return its name.
-                    print(f"Using Model: {m.name}")
-                    return m.name
-    except Exception as e:
-        print(f"List models failed: {e}")
-    
-    # 2. Fallback list if auto-detect fails
-    return "gemini-1.5-flash"
+        return "gemini-1.5-flash"
+    except:
+        return "gemini-pro"
 
-# --- FUNCTIONS ---
 def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        hist = stock.history(period="1mo")
-        # safely try to get news, return empty list if it fails
+        # Fetch 1 year for the "Time Machine" feature
+        hist = stock.history(period="1y")
         try:
             news = stock.news
         except:
             news = []
-        return hist, news, stock.info
+        
+        # Try fetching insider data (can be flaky on free APIs)
+        try:
+            insider = stock.insider_transactions
+        except:
+            insider = pd.DataFrame()
+            
+        return hist, news, stock.info, insider
     except Exception as e:
-        return None, None, None
+        return None, None, None, None
 
-def analyze_sentiment(news_list, api_key):
+def analyze_sentiment(news_list, api_key, eli5_mode=False):
     if "PASTE" in api_key:
-        return "⚠️ You need to paste your actual API Key in the code first!", 0
+        return "⚠️ Add API Key!", 0
     
     if not news_list:
-        return "No recent news found to analyze.", 0
+        return "No news found.", 0
 
-    # Auto-detect the best model name
     model_name = get_working_model(api_key)
-    
     try:
         model = genai.GenerativeModel(model_name)
     except:
-        return f"Error: Could not load model '{model_name}'. Check API Key.", 0
+        return "Model Error", 0
     
-    # --- ROBUST TITLE EXTRACTION ---
     headlines = []
     for n in news_list[:5]:
-        if 'title' in n:
-            headlines.append(n['title'])
-        elif 'content' in n and 'title' in n['content']:
-            headlines.append(n['content']['title'])
-        else:
-            continue
+        title = n.get('title', n.get('content', {}).get('title', ''))
+        if title: headlines.append(title)
             
     if not headlines:
-        return "Could not extract readable headlines from Yahoo Finance.", 0
+        return "No readable headlines.", 0
+    
+    # Customizing Prompt based on ELI5 Toggle
+    tone_instruction = "Explain it simply like I'm 5 years old. Use emojis. No financial jargon." if eli5_mode else "Use professional financial tone."
     
     prompt = f"""
-    Act as a Wall Street Financial Analyst. Analyze the sentiment of these 5 headlines for a single stock:
-    {headlines}
-    
-    Output strictly in this format:
-    SENTIMENT_SCORE: [A number between -1.0 (Very Negative) and 1.0 (Very Positive)]
-    SUMMARY: [A 2-sentence summary of the key risks or opportunities mentioned]
+    Analyze sentiment for these stock headlines: {headlines}
+    {tone_instruction}
+    Return strictly:
+    SCORE: [Float -1.0 to 1.0]
+    SUMMARY: [2-sentence summary]
     """
     
     try:
         response = model.generate_content(prompt)
         text = response.text
+        if "SCORE" not in text: return f"AI Error: {text}", 0
         
-        # Safety check for response format
-        if "SENTIMENT_SCORE" not in text:
-            return f"AI Analysis: {text}", 0
-            
-        score_line = [line for line in text.split('\n') if "SENTIMENT_SCORE" in line][0]
-        score = float(score_line.split(":")[1].strip())
-        summary_line = text.split("SUMMARY:")[1].strip()
-        return summary_line, score
-    except Exception as e:
-        return f"Error parsing AI response: {e}", 0
+        score = float(text.split("SCORE:")[1].split("\n")[0].strip())
+        summary = text.split("SUMMARY:")[1].strip()
+        return summary, score
+    except:
+        return "Analysis Failed", 0
 
 # --- MAIN UI ---
-st.title("📈 StockPulse: AI Sentiment Analyzer")
-col1, col2 = st.columns([1, 2])
+st.header("📈 StockPulse")
 
-with col1:
-    ticker = st.text_input("Stock Ticker", value="GOOGL").upper()
-    if st.button("Analyze Stock"):
-        with st.spinner(f"Fetching data for {ticker}..."):
-            hist, news, info = get_stock_data(ticker)
-            if hist is None or hist.empty:
-                st.error("Invalid Ticker or No Data Found.")
-            else:
-                current_price = hist['Close'].iloc[-1]
-                st.metric("Current Price", f"${current_price:.2f}")
+# 1. QUICK SELECT (Mobile Friendly)
+col_q1, col_q2, col_q3, col_q4 = st.columns(4)
+if 'selected_ticker' not in st.session_state: st.session_state.selected_ticker = "GOOGL"
+
+def set_ticker(t): st.session_state.selected_ticker = t
+if col_q1.button("NVDA"): set_ticker("NVDA")
+if col_q2.button("TSLA"): set_ticker("TSLA")
+if col_q3.button("AAPL"): set_ticker("AAPL")
+if col_q4.button("BTC-USD"): set_ticker("BTC-USD")
+
+ticker_input = st.text_input("Ticker:", value=st.session_state.selected_ticker).upper()
+
+if ticker_input:
+    with st.spinner("Crunching numbers..."):
+        hist, news, info, insider = get_stock_data(ticker_input)
+        
+        if hist is None or hist.empty:
+            st.error("Stock not found.")
+        else:
+            current_price = hist['Close'].iloc[-1]
+            
+            # --- FEATURE 2: TABS LAYOUT ---
+            tab1, tab2, tab3 = st.tabs(["📊 Price", "🤖 AI & News", "🕵️ Insider & Fun"])
+            
+            # === TAB 1: PRICE & BASICS ===
+            with tab1:
+                # Metrics Row
+                m1, m2, m3 = st.columns(3)
+                if len(hist) > 1:
+                    delta = ((current_price - hist['Close'].iloc[-2])/hist['Close'].iloc[-2])*100
+                else:
+                    delta = 0
+                m1.metric("Price", f"${current_price:.2f}", f"{delta:.2f}%")
+                m2.metric("High (1y)", f"${hist['High'].max():.2f}")
+                m3.metric("Low (1y)", f"${hist['Low'].min():.2f}")
+                
+                # Chart
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=hist.index, y=hist['Close'], mode='lines', name='Price'))
-                fig.update_layout(title="30-Day Trend", height=300, margin=dict(l=0, r=0, t=30, b=0))
+                fig.add_trace(go.Scatter(x=hist.index, y=hist['Close'], fill='tozeroy', line_color='#00CC96'))
+                fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=300, showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
 
-with col2:
-    if 'hist' in locals() and hist is not None and not hist.empty:
-        st.subheader(f"🤖 AI Sentiment Analysis ({ticker})")
-        with st.spinner("Consulting Gemini AI..."):
-            summary, score = analyze_sentiment(news, api_key)
-        
-        # Display results only if valid score returned
-        if isinstance(score, (int, float)):
-            if score > 0.3:
-                color = "green"
-                mood = "Bullish 🐂"
-            elif score < -0.3:
-                color = "red"
-                mood = "Bearish 🐻"
-            else:
-                color = "gray"
-                mood = "Neutral 😐"
+            # === TAB 2: AI & NEWS ===
+            with tab2:
+                # --- FEATURE 6: ELI5 TOGGLE ---
+                col_ai_head, col_ai_tog = st.columns([3,1])
+                col_ai_head.subheader("Sentiment Analysis")
+                eli5 = col_ai_tog.toggle("Explain like I'm 5 👶", value=False)
                 
-            st.markdown(f"### Sentiment: :{color}[{mood}]")
-            st.progress((score + 1) / 2)
-            st.info(f"**Analyst Summary:** {summary}")
-        else:
-            st.warning(summary)
+                summary, score = analyze_sentiment(news, api_key, eli5)
+                
+                if isinstance(score, float):
+                    st.progress((score + 1) / 2)
+                    if score > 0.2: st.success(summary)
+                    elif score < -0.2: st.error(summary)
+                    else: st.info(summary)
+                else:
+                    st.warning(summary)
+
+                st.divider()
+                st.caption("Latest News")
+                for n in news[:3]:
+                    st.markdown(f"• **[{n.get('title', 'Link')}]({n.get('link', '#')})**")
+
+            # === TAB 3: INSIDER & TIME MACHINE ===
+            with tab3:
+                # --- FEATURE 8: TIME MACHINE ---
+                st.subheader("⏳ Time Machine")
+                st.caption(f"If you invested $1,000 in {ticker_input} exactly 1 year ago...")
+                
+                if not hist.empty:
+                    start_price_1y = hist['Close'].iloc[0]
+                    roi = ((current_price - start_price_1y) / start_price_1y) * 100
+                    final_value = 1000 * (1 + roi/100)
+                    
+                    color = "green" if roi > 0 else "red"
+                    st.markdown(f"### You would have: :{color}[${final_value:,.2f}]")
+                    st.markdown(f"**Return:** :{color}[{roi:.1f}%]")
+                else:
+                    st.warning("Not enough historical data for Time Machine.")
+
+                st.divider()
+
+                # --- FEATURE 10: INSIDER MOVES (Fixed) ---
+                st.subheader("🕵️ Insider Moves")
+                if insider is not None and not insider.empty:
+                    st.caption("Recent transactions by company insiders:")
+                    
+                    # 1. Create a safe copy
+                    insider_clean = insider.copy()
+                    
+                    # 2. Try to find the date column
+                    date_col = None
+                    possible_dates = ['Start Date', 'Date', 'Transaction Date']
+                    for col in possible_dates:
+                        if col in insider_clean.columns:
+                            date_col = col
+                            break
+                    
+                    # 3. If date found, set it as index (pretty format)
+                    if date_col:
+                        try:
+                            insider_clean[date_col] = pd.to_datetime(insider_clean[date_col])
+                            insider_clean.set_index(date_col, inplace=True)
+                            insider_clean.index = insider_clean.index.date
+                        except:
+                            pass # If conversion fails, ignore it
+                    
+                    # 4. Display columns safely
+                    # We check which columns actually exist before asking to display them
+                    cols_to_show = []
+                    for c in ['Text', 'Shares', 'Value']:
+                        if c in insider_clean.columns:
+                            cols_to_show.append(c)
+                            
+                    if cols_to_show:
+                        st.dataframe(insider_clean[cols_to_show].head(5), use_container_width=True)
+                    else:
+                        st.dataframe(insider_clean.head(5), use_container_width=True)
+
+                else:
+                    st.info("No insider trading data available for this stock.")
