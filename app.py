@@ -1,4 +1,3 @@
-%%writefile app.py
 import streamlit as st
 import yfinance as yf
 import google.generativeai as genai
