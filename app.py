@@ -12,8 +12,14 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# !!! PASTE YOUR KEY HERE !!!
-api_key = "AIzaSyCYdqSca3--0MkYlXIgsDZQLC09Pft4fiY" 
+# --- SECURE API KEY HANDLING ---
+try:
+    # Try to grab the key from Streamlit's secret vault
+    api_key = st.secrets["GEMINI_API_KEY"]
+except FileNotFoundError:
+    # If the secret file is missing (e.g., running locally without setup), use a placeholder or error
+    st.error("Secrets not found. Please set up .streamlit/secrets.toml or Streamlit Cloud Secrets.")
+    api_key = ""
 
 # --- HELPER: SMART MODEL DETECTOR ---
 def get_working_model(api_key):
