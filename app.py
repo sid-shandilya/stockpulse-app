@@ -27,6 +27,31 @@ def get_working_model(api_key):
         pass
     return "gemini-pro"
 
+# --- HELPER: ROBUST NEWS PARSER (The Fix) ---
+def normalize_news_item(n):
+    """
+    Aggressively hunts for Title and Link in messy JSON structures.
+    Returns: (title, link)
+    """
+    # 1. Try Top Level Keys
+    title = n.get('title')
+    link = n.get('link') or n.get('url')
+    
+    # 2. Try Nested 'content' (Common in newer API versions)
+    if not title and 'content' in n:
+        title = n['content'].get('title')
+        
+    if not link and 'content' in n:
+        # check for canonicalUrl or clickThroughUrl inside content
+        c = n['content']
+        link = c.get('canonicalUrl', {}).get('url') or c.get('clickThroughUrl', {}).get('url')
+        
+    # 3. Fallback Title
+    if not title:
+        title = "Market Update"
+        
+    return title, link
+
 def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
@@ -53,12 +78,14 @@ def analyze_sentiment(news_list, api_key, eli5_mode=False):
     except Exception as e:
         return f"Model Error: {e}", 0
     
+    # Use our new robust parser for the AI too
     headlines = []
     for n in news_list[:5]:
-        title = n.get('title', n.get('content', {}).get('title', ''))
-        if title: headlines.append(title)
+        title, _ = normalize_news_item(n)
+        if title != "Market Update": # Only add real titles
+            headlines.append(title)
             
-    if not headlines: return "No headlines.", 0
+    if not headlines: return "No readable headlines.", 0
     
     tone = "Explain simply like I'm 5. Use emojis." if eli5_mode else "Use professional tone."
     prompt = f"Analyze sentiment for: {headlines}. {tone} Return strictly: SCORE: [Float -1.0 to 1.0] SUMMARY: [2-sentence summary]"
@@ -130,19 +157,31 @@ if ticker_input:
                 st.divider()
                 st.caption("Latest News (Opens in New Tab)")
                 
-                # --- THE FIX: Force New Tab with HTML ---
+                # --- FIXED NEWS DISPLAY ---
+                if not news:
+                    st.info("No recent news found.")
+                
                 for n in news[:5]:
-                    title = n.get('title', 'Read Article')
-                    link = n.get('link')
+                    # Use the new robust parser
+                    title, link = normalize_news_item(n)
                     
-                    # Only render if we have a valid link
-                    if link and link.startswith('http'):
-                        # HTML anchor tag with target="_blank"
+                    if link:
+                        # Clean Link Card
                         st.markdown(
-                            f'<a href="{link}" target="_blank" style="text-decoration: none; color: #00CC96; font-weight: bold;">🔗 {title}</a>', 
+                            f'''
+                            <div style="margin-bottom: 8px; background-color: #f0f2f6; padding: 12px; border-radius: 8px; border-left: 5px solid #00CC96;">
+                                <a href="{link}" target="_blank" style="text-decoration: none; color: #333; font-weight: 600; font-size: 16px;">
+                                    {title}
+                                </a>
+                                <br>
+                                <span style="font-size: 12px; color: #666;">🔗 Click to read full article</span>
+                            </div>
+                            ''', 
                             unsafe_allow_html=True
                         )
-                        st.write("") # Spacer
+                    else:
+                        # Just text if no link found
+                        st.markdown(f"**{title}** (No link available)")
 
             with tab3:
                 st.subheader("⏳ Time Machine")
@@ -150,14 +189,21 @@ if ticker_input:
                     start_price_1y = hist['Close'].iloc[0]
                     roi = ((current_price - start_price_1y) / start_price_1y) * 100
                     final_value = 1000 * (1 + roi/100)
-                    color = "green" if roi > 0 else "red"
-                    st.markdown(f"If you invested $1,000 exactly 1 year ago, you'd have: :{color}[${final_value:,.2f}]")
+                    
+                    # --- FIXED METRIC DISPLAY ---
+                    # Using standard st.metric prevents the markdown overlap bug
+                    tm1, tm2 = st.columns(2)
+                    tm1.metric("Invested 1 Year Ago", "$1,000.00")
+                    tm2.metric("Current Value", f"${final_value:,.2f}", f"{roi:.1f}%")
+                    
+                else:
+                    st.warning("Not enough history for Time Machine.")
                 
                 st.divider()
                 st.subheader("🕵️ Insider Moves")
                 if insider is not None and not insider.empty:
                     insider_clean = insider.copy()
-                    # Safe Date logic...
+                    # Safe Date logic
                     date_col = None
                     for col in ['Start Date', 'Date', 'Transaction Date']:
                         if col in insider_clean.columns:
