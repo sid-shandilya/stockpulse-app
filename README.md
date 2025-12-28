@@ -3,7 +3,7 @@
 StockPulse is a real-time financial dashboard that democratizes stock analysis. It combines live market data with Generative AI to provide instant sentiment analysis of financial news, helping retail investors understand market mood without reading lengthy reports.
 
 ## 🚀 Live Demo
-https://stockpulse-sentiment.streamlit.app/
+[WebPage Link](https://stockpulse-sentiment.streamlit.app/).
 
 ## ✨ Key Features
 * **Real-Time Data:** Fetches live stock prices and 30-day historical data using `yfinance`.
